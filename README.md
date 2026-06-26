@@ -185,6 +185,38 @@ flowchart TB
     wg0 ---|4G/LTE| WG
 ```
 
+### Pivot Backends
+
+PhantomPi keeps transparent bridge mode as the base behavior: traffic from the
+inline device continues to cross `br0` and can be captured by the implant. The
+active pivot mode is selected in `/opt/implant/config.env`:
+
+```bash
+PIVOT_BACKEND="legacy-spoof"
+```
+
+Available modes:
+
+| Backend | Behavior | Tradeoff |
+|---------|----------|----------|
+| `legacy-spoof` | Original `veth0`/`veth1` pivot. `veth1` takes the inline device IP/MAC and legacy ebtables/arptables/iptables rules reduce leaks. | Default and most compatible, but the implant and real device share the same identity. |
+| `nft-stateful` | Creates a `phantompi-pivot` namespace with a veth peer enslaved into `br0`. `nft bridge` rewrites implant-owned flows to the inline device IP/MAC and rewrites matching replies back to the namespace. | Avoids assigning the client identity to a root-namespace interface. Keep `PIVOT_ENABLE_ICMP="no"` for transparent client ICMP. |
+| `conntrack-bridge` | Assigns `PIVOT_CONNTRACK_IP` to `br0`, enables `br_netfilter`, uses iptables SNAT plus ebtables L2 SNAT, and lets conntrack reverse-NAT replies into the implant stack. | Closest to the NeCr00/NAC-Bypass model. Transparent client traffic remains untouched because L2 SNAT matches the bridge MAC, not the client MAC. |
+
+Common settings:
+
+```bash
+PIVOT_SNAT_PORT_RANGE="61000-62000"
+PIVOT_ENABLE_ICMP="no"
+PIVOT_CONNTRACK_IP="169.254.66.66/16"
+PIVOT_CONNTRACK_GW="169.254.66.1"
+```
+
+`nft-stateful` and `conntrack-bridge` both use a reserved TCP/UDP source-port
+range for implant-owned flows. This reduces but does not mathematically remove
+collision risk with the real client. Keep the backend set to `legacy-spoof`
+unless the newer mode has been validated on the target kernel and network.
+
 ## Installation
 
 > [!IMPORTANT]
@@ -298,4 +330,3 @@ STL files for the custom 3D-printed case:
 
 - **[v1.1](https://github.com/1r0ncut/PhantomPi/releases/tag/v1.1)**: Replaced Discord bot with OpenClaw AI assistant; real-time credential push via webhook, natural-language C2, modular skill system ([Implant API and OpenClaw Skills](docs/skills-and-api.md))
 - **[v1.0](https://github.com/1r0ncut/PhantomPi/releases/tag/v1.0)**: Initial release, transparent bridge, 802.1X bypass, identity spoofing, LTE out-of-band C2, Discord bot
-

@@ -13,6 +13,20 @@
         "usb_eth_adapter_usb_path": "2-1"
     },
 
+    "pivot": {
+        "_comment": "Pivot backend. legacy-spoof preserves existing veth1 behavior. nft-stateful uses a namespace bridged into br0. conntrack-bridge uses br_netfilter reverse NAT on br0.",
+        "backend": "legacy-spoof",
+        "namespace": "phantompi-pivot",
+        "bridge_peer": "pivot-br",
+        "namespace_peer": "pivot-ns",
+        "pivot_ip": "169.254.66.2/24",
+        "conntrack_ip": "169.254.66.66/16",
+        "conntrack_gateway": "169.254.66.1",
+        "snat_port_range": "61000-62000",
+        "nft_table_prefix": "phantompi",
+        "enable_icmp": "no"
+    },
+
     "wireguard": {
         "_comment": "VPN tunnel to operator VPS. server_public_key, server_public_ip and server_port are REQUIRED. If implant_private_key is empty a new key pair is generated automatically.",
         "implant_address": "10.8.0.3/24",

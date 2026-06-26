@@ -13,6 +13,9 @@ from flask import jsonify
 
 VETH_IN      = "veth0"
 VETH_OUT     = "veth1"
+CONFIG_FILE  = "/opt/implant/config.env"
+PIVOT_NFT    = "/opt/implant/scripts/pivot-nft.sh"
+PIVOT_CONNTRACK = "/opt/implant/scripts/pivot-conntrack.sh"
 SPOOF_LOG    = "/opt/implant/logs/spoof-target/spoof-target.log"
 SUBNETS_FILE = "/opt/implant/logs/traffic-analyzer/subnet-suggestions.json"
 
@@ -28,6 +31,28 @@ def _run(cmd):
 
 def _iface_exists(name):
     return _run(f"ip link show {name} 2>/dev/null") != ""
+
+
+def _config_value(name, default=""):
+    if not os.path.isfile(CONFIG_FILE):
+        return default
+    try:
+        with open(CONFIG_FILE) as fh:
+            for line in fh:
+                line = line.strip()
+                if line.startswith(f"{name}="):
+                    return line.split("=", 1)[1].strip().strip('"').strip("'")
+    except OSError:
+        return default
+    return default
+
+
+def _backend():
+    return _config_value("PIVOT_BACKEND", "legacy-spoof")
+
+
+def _pivot_script():
+    return PIVOT_CONNTRACK if _backend() == "conntrack-bridge" else PIVOT_NFT
 
 
 def _parse_spoof_log():
@@ -68,8 +93,37 @@ def _parse_spoof_log():
 
 
 def _current_routes():
+    if _backend() in ("nft-stateful", "conntrack-bridge"):
+        out = _run(f"{_pivot_script()} status 2>/dev/null")
+        routes = []
+        for line in out.splitlines():
+            if line and "=" not in line:
+                routes.append(line.strip())
+        return routes
     out = _run(f"ip route show dev {VETH_OUT} 2>/dev/null")
     return [ln.strip() for ln in out.splitlines() if ln.strip()]
+
+
+def _script_backend_ready():
+    out = _run(f"{_pivot_script()} status 2>/dev/null")
+    values = {}
+    for line in out.splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            values[key.strip()] = value.strip()
+    return (
+        (
+            values.get("namespace_ready") == "yes"
+            and values.get("bridge_peer_ready") == "yes"
+            and values.get("nft_ready") == "yes"
+        )
+        or (
+            values.get("bridge_ip_ready") == "yes"
+            and values.get("iptables_ready") == "yes"
+            and values.get("ebtables_ready") == "yes"
+            and values.get("br_netfilter_ready") == "yes"
+        )
+    )
 
 
 def _suggest_subnets():
@@ -90,8 +144,12 @@ def _suggest_subnets():
 def register(app):
     @app.route("/pivot-status", methods=["GET"])
     def pivot_status():
-        pivot_ready = _iface_exists(VETH_IN) and _iface_exists(VETH_OUT)
+        backend = _backend()
+        pivot_ready = _script_backend_ready() if backend in ("nft-stateful", "conntrack-bridge") else (
+            _iface_exists(VETH_IN) and _iface_exists(VETH_OUT)
+        )
         return jsonify({
+            "backend":           backend,
             "pivot_ready":       pivot_ready,
             "spoofed":           _parse_spoof_log(),
             "current_routes":    _current_routes(),

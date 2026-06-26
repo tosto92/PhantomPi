@@ -94,6 +94,15 @@ bridge_exists() {
 }
 
 delete_bridge() {
+    if [ -x /opt/implant/scripts/pivot-nft.sh ]; then
+        log "Cleaning nft pivot state"
+        /opt/implant/scripts/pivot-nft.sh clean || true
+    fi
+    if [ -x /opt/implant/scripts/pivot-conntrack.sh ]; then
+        log "Cleaning conntrack pivot state"
+        /opt/implant/scripts/pivot-conntrack.sh clean || true
+    fi
+
     if bridge_exists; then
         log "Deleting bridge $BRIDGE"
         ip link set "$BRIDGE" down

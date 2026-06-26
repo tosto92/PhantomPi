@@ -4,10 +4,13 @@
 # Source shared config to inherit PCAP_DIR and other paths if available
 [ -f /opt/implant/config.env ] && source /opt/implant/config.env
 
-VETH_IN="veth0"
-VETH_OUT="veth1"
-BRIDGE="br0"
-LISTEN_IFACE="eth2"
+VETH_IN="${VETH_IN:-veth0}"
+VETH_OUT="${VETH_OUT:-veth1}"
+BRIDGE="${BRIDGE:-br0}"
+LISTEN_IFACE="${LISTEN_IFACE:-${IFACE_TARGET:-eth2}}"
+PIVOT_BACKEND="${PIVOT_BACKEND:-legacy-spoof}"
+PIVOT_NFT_SCRIPT="${PIVOT_NFT_SCRIPT:-/opt/implant/scripts/pivot-nft.sh}"
+PIVOT_CONNTRACK_SCRIPT="${PIVOT_CONNTRACK_SCRIPT:-/opt/implant/scripts/pivot-conntrack.sh}"
 LOG_DIR="/opt/implant/logs/spoof-target"
 LOG_FILE="${LOG_DIR}/spoof-target.log"
 SUBNETS_FILE="/opt/implant/logs/traffic-analyzer/subnet-suggestions.json"
@@ -20,6 +23,7 @@ SPOOFED_IP=""
 SPOOFED_MAC=""
 SPOOFED_HOSTNAME=""
 GATEWAY_IP=""
+GATEWAY_MAC=""
 DNS_SERVER=""
 CAPTURE_FILE=""
 EXTRACT_FILE=""
@@ -71,6 +75,8 @@ usage() {
   echo "  --set-ip <ip>        Manually set the target IP address."
   echo "  --set-mac <mac>      Manually set the target MAC address."
   echo "  --set-hostname <val> Manually set the target hostname."
+  echo "  --set-gateway <ip>   Manually set the gateway IP address."
+  echo "  --set-gateway-mac <mac> Manually set the gateway MAC address."
   echo ""
   echo "Live-only Options (require --live):"
   echo "  --timeout <sec>      Set the capture duration (default: ${TIMEOUT}s)."
@@ -378,6 +384,7 @@ log_info() {
   echo "  Spoofed MAC:        ${SPOOFED_MAC:-Not set}"
   echo "  Spoofed Hostname:   ${SPOOFED_HOSTNAME:-Not set}"
   echo "  Detected Gateway:   ${GATEWAY_IP:-Not set}"
+  echo "  Detected Gateway MAC: ${GATEWAY_MAC:-Not set}"
   echo "  Detected DNS:       ${DNS_SERVER:-Not set}"
   echo ""
   } | sudo tee -a "$LOG_FILE" > /dev/null
@@ -410,11 +417,13 @@ load_last_spoofed() {
   SPOOFED_MAC=$(     echo "$block" | grep "Spoofed MAC:"      | sed 's/.*Spoofed MAC:[[:space:]]*//')
   SPOOFED_HOSTNAME=$(echo "$block" | grep "Spoofed Hostname:" | sed 's/.*Spoofed Hostname:[[:space:]]*//')
   GATEWAY_IP=$(      echo "$block" | grep "Detected Gateway:" | sed 's/.*Detected Gateway:[[:space:]]*//')
+  GATEWAY_MAC=$(     echo "$block" | grep "Detected Gateway MAC:" | sed 's/.*Detected Gateway MAC:[[:space:]]*//')
   DNS_SERVER=$(      echo "$block" | grep "Detected DNS:"     | sed 's/.*Detected DNS:[[:space:]]*//')
 
   # Clear "Not set" placeholders so apply_spoof_config skips optional fields
   [ "$SPOOFED_HOSTNAME" = "Not set" ] && SPOOFED_HOSTNAME=""
   [ "$GATEWAY_IP"       = "Not set" ] && GATEWAY_IP=""
+  [ "$GATEWAY_MAC"      = "Not set" ] && GATEWAY_MAC=""
   [ "$DNS_SERVER"       = "Not set" ] && DNS_SERVER=""
 
   # IP and MAC are required; anything else is fail-safe optional
@@ -447,6 +456,7 @@ display_summary_and_confirm() {
   echo "  Spoofed Hostname:   ${SPOOFED_HOSTNAME:-Not set}"
   if $DO_GATEWAY || $DO_DNS; then
     echo "  Detected Gateway:   ${GATEWAY_IP:-Not found}"
+    echo "  Detected Gateway MAC: ${GATEWAY_MAC:-Not found}"
     echo "  Detected DNS:       ${DNS_SERVER:-Not found}"
   fi
   echo "-------------------------"
@@ -464,6 +474,20 @@ display_summary_and_confirm() {
 ##
 apply_spoof_config() {
   echo "[*] Applying spoofed configuration..."
+  if [ "$PIVOT_BACKEND" = "nft-stateful" ] || [ "$PIVOT_BACKEND" = "conntrack-bridge" ]; then
+    local pivot_script="$PIVOT_NFT_SCRIPT"
+    [ "$PIVOT_BACKEND" = "conntrack-bridge" ] && pivot_script="$PIVOT_CONNTRACK_SCRIPT"
+    [ -x "$pivot_script" ] || { echo "[!] pivot script not found: ${pivot_script}" >&2; exit 1; }
+    [ -n "$GATEWAY_IP" ] || { echo "[!] Gateway IP is required for ${PIVOT_BACKEND} backend." >&2; exit 1; }
+    [ -n "$GATEWAY_MAC" ] || { echo "[!] Gateway MAC is required for ${PIVOT_BACKEND} backend." >&2; exit 1; }
+    sudo "$pivot_script" apply \
+      --target-ip "$SPOOFED_IP" \
+      --target-mac "$SPOOFED_MAC" \
+      --gateway-ip "$GATEWAY_IP" \
+      --gateway-mac "$GATEWAY_MAC" || exit 1
+    return
+  fi
+
   if ! ip link show "$VETH_IN" &>/dev/null; then
     sudo ip link add "$VETH_IN" type veth peer name "$VETH_OUT";
   fi
@@ -506,6 +530,12 @@ apply_spoof_config() {
 ##
 cleanup() {
   echo "[*] Cleaning up spoofed network setup..."
+  if [ -x "$PIVOT_NFT_SCRIPT" ]; then
+    sudo "$PIVOT_NFT_SCRIPT" clean 2>/dev/null || true
+  fi
+  if [ -x "$PIVOT_CONNTRACK_SCRIPT" ]; then
+    sudo "$PIVOT_CONNTRACK_SCRIPT" clean 2>/dev/null || true
+  fi
 
   # Remove firewall rules
   echo "[*] Removing ebtables and arptables rules..."
@@ -562,7 +592,10 @@ except Exception as e:
   echo "$suggestions"
   echo "-------------------------------------------------"
 
-  read -p "Add these routes via ${VETH_OUT}? (y/N): " subnet_confirm
+  local route_target="$VETH_OUT"
+  [ "$PIVOT_BACKEND" = "nft-stateful" ] && route_target="$PIVOT_NFT_SCRIPT"
+  [ "$PIVOT_BACKEND" = "conntrack-bridge" ] && route_target="$PIVOT_CONNTRACK_SCRIPT"
+  read -p "Add these routes via ${route_target}? (y/N): " subnet_confirm
   if [[ ! "$subnet_confirm" =~ ^[yY]$ ]]; then
     echo "[*] Skipping subnet routes."
     return
@@ -579,6 +612,18 @@ for s in data.get('suggestions', []):
   local added=0 failed=0
   while IFS= read -r subnet; do
     [ -z "$subnet" ] && continue
+    if [ "$PIVOT_BACKEND" = "nft-stateful" ] || [ "$PIVOT_BACKEND" = "conntrack-bridge" ]; then
+      local pivot_script="$PIVOT_NFT_SCRIPT"
+      [ "$PIVOT_BACKEND" = "conntrack-bridge" ] && pivot_script="$PIVOT_CONNTRACK_SCRIPT"
+      if sudo "$pivot_script" route-add "$subnet" 2>/dev/null; then
+        echo "[+] Route added in ${PIVOT_BACKEND} pivot: ${subnet}"
+        (( added++ )) || true
+      else
+        echo "[!] Skipped (already exists or failed): ${subnet}"
+        (( failed++ )) || true
+      fi
+      continue
+    fi
     if sudo ip route add "$subnet" dev "$VETH_OUT" 2>/dev/null; then
       echo "[+] Route added: ${subnet} dev ${VETH_OUT}"
       (( added++ )) || true
@@ -610,6 +655,8 @@ while [ "$#" -gt 0 ]; do
         --set-ip) SPOOFED_IP="$2"; shift 2;;
         --set-mac) SPOOFED_MAC="$2"; shift 2;;
         --set-hostname) SPOOFED_HOSTNAME="$2"; shift 2;;
+        --set-gateway) GATEWAY_IP="$2"; shift 2;;
+        --set-gateway-mac) GATEWAY_MAC="$2"; shift 2;;
 
         --live) LIVE_CAPTURE=true; shift;;
         --timeout) TIMEOUT="$2"; TIMEOUT_EXPLICIT=true; shift 2;;

@@ -12,6 +12,9 @@ import subprocess
 from flask import jsonify, request
 
 VETH_OUT  = "veth1"
+CONFIG_FILE = "/opt/implant/config.env"
+PIVOT_NFT = "/opt/implant/scripts/pivot-nft.sh"
+PIVOT_CONNTRACK = "/opt/implant/scripts/pivot-conntrack.sh"
 SPOOF_LOG = "/opt/implant/logs/spoof-target/spoof-target.log"
 
 _CIDR_RE = re.compile(
@@ -27,6 +30,52 @@ def _run(cmd):
 def _veth_ready():
     rc, _, _ = _run(f"ip link show {VETH_OUT} 2>/dev/null")
     return rc == 0
+
+
+def _config_value(name, default=""):
+    if not os.path.isfile(CONFIG_FILE):
+        return default
+    try:
+        with open(CONFIG_FILE) as fh:
+            for line in fh:
+                line = line.strip()
+                if line.startswith(f"{name}="):
+                    return line.split("=", 1)[1].strip().strip('"').strip("'")
+    except OSError:
+        return default
+    return default
+
+
+def _backend():
+    return _config_value("PIVOT_BACKEND", "legacy-spoof")
+
+
+def _pivot_script():
+    return PIVOT_CONNTRACK if _backend() == "conntrack-bridge" else PIVOT_NFT
+
+
+def _script_backend_ready():
+    rc, out, _ = _run(f"{_pivot_script()} status 2>/dev/null")
+    if rc != 0:
+        return False
+    values = {}
+    for line in out.splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            values[key.strip()] = value.strip()
+    return (
+        (
+            values.get("namespace_ready") == "yes"
+            and values.get("bridge_peer_ready") == "yes"
+            and values.get("nft_ready") == "yes"
+        )
+        or (
+            values.get("bridge_ip_ready") == "yes"
+            and values.get("iptables_ready") == "yes"
+            and values.get("ebtables_ready") == "yes"
+            and values.get("br_netfilter_ready") == "yes"
+        )
+    )
 
 
 def _get_gateway():
@@ -63,13 +112,32 @@ def register(app):
 
     @app.route("/pivot-setup", methods=["POST"])
     def pivot_setup():
-        if not _veth_ready():
+        backend = _backend()
+        if backend in ("nft-stateful", "conntrack-bridge"):
+            if not _script_backend_ready():
+                return jsonify({"error": f"pivot not ready: {backend} backend is not applied"}), 409
+        elif not _veth_ready():
             return jsonify({"error": "pivot not ready: veth1 does not exist"}), 409
 
         body = request.get_json(silent=True) or {}
         subnets = [s for s in body.get("subnets", []) if _CIDR_RE.match(s)]
         if not subnets:
             return jsonify({"error": "no valid subnets provided"}), 400
+
+        if backend in ("nft-stateful", "conntrack-bridge"):
+            configured, failed = [], []
+            for subnet in subnets:
+                rc, _, err = _run(f"{_pivot_script()} route-add {subnet}")
+                if rc == 0:
+                    configured.append(subnet)
+                else:
+                    failed.append({"subnet": subnet, "error": err})
+            return jsonify({
+                "backend":    backend,
+                "configured": configured,
+                "skipped":    [],
+                "failed":     failed,
+            })
 
         gateway = _get_gateway()
         if not gateway:
@@ -93,6 +161,7 @@ def register(app):
                 failed.append({"subnet": subnet, "error": err})
 
         return jsonify({
+            "backend":    backend,
             "gateway":    gateway,
             "configured": configured,
             "skipped":    skipped,
@@ -101,10 +170,25 @@ def register(app):
 
     @app.route("/pivot-reset", methods=["POST"])
     def pivot_reset():
+        backend = _backend()
         body = request.get_json(silent=True) or {}
         subnets = [s for s in body.get("subnets", []) if _CIDR_RE.match(s)]
 
         removed, failed = [], []
+
+        if backend in ("nft-stateful", "conntrack-bridge"):
+            if not subnets:
+                rc, _, err = _run(f"{_pivot_script()} route-flush")
+                if rc == 0:
+                    return jsonify({"backend": backend, "removed": "all", "failed": []})
+                return jsonify({"backend": backend, "removed": [], "failed": [{"subnet": "all", "error": err}]})
+            for subnet in subnets:
+                rc, _, err = _run(f"{_pivot_script()} route-del {subnet}")
+                if rc == 0:
+                    removed.append(subnet)
+                else:
+                    failed.append({"subnet": subnet, "error": err})
+            return jsonify({"backend": backend, "removed": removed, "failed": failed})
 
         if not subnets:
             # Flush all routes on veth1
