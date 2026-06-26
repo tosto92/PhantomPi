@@ -22,6 +22,8 @@
         "pivot_ip": "169.254.66.2/24",
         "conntrack_ip": "169.254.66.66/16",
         "conntrack_gateway": "169.254.66.1",
+        "mark": "0x66",
+        "mark_user": "phantompi-pivot",
         "snat_port_range": "61000-62000",
         "nft_table_prefix": "phantompi",
         "enable_icmp": "no"

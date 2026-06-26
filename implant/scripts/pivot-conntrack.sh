@@ -9,8 +9,11 @@ PIVOT_CONNTRACK_IP="${PIVOT_CONNTRACK_IP:-169.254.66.66/16}"
 PIVOT_CONNTRACK_GW="${PIVOT_CONNTRACK_GW:-169.254.66.1}"
 PIVOT_SNAT_PORT_RANGE="${PIVOT_SNAT_PORT_RANGE:-61000-62000}"
 PIVOT_ENABLE_ICMP="${PIVOT_ENABLE_ICMP:-no}"
+PIVOT_MARK="${PIVOT_MARK:-0x66}"
+PIVOT_MARK_USER="${PIVOT_MARK_USER:-phantompi-pivot}"
 
 NAT_CHAIN="PHANTOMPI_CT_NAT"
+MARK_CHAIN="PHANTOMPI_CT_MARK"
 EBT_CHAIN="PHANTOMPI_CT_L2"
 STATE_DIR="/run/phantompi-conntrack"
 STATE_FILE="${STATE_DIR}/state.env"
@@ -31,6 +34,10 @@ EOF
 
 private_ip() {
   echo "${PIVOT_CONNTRACK_IP%%/*}"
+}
+
+pivot_mode() {
+  [ "${PIVOT_BACKEND:-}" = "conntrack-mark" ] && echo "mark" || echo "range"
 }
 
 need() {
@@ -54,11 +61,17 @@ GATEWAY_IP="$GATEWAY_IP"
 GATEWAY_MAC="$GATEWAY_MAC"
 BRIDGE_MAC="$BRIDGE_MAC"
 BR_NF_CALL_IPTABLES_OLD="$BR_NF_CALL_IPTABLES_OLD"
+PIVOT_MODE="$(pivot_mode)"
+PIVOT_MARK="$PIVOT_MARK"
+PIVOT_MARK_USER="$PIVOT_MARK_USER"
 EOF
 }
 
 clean() {
   load_state
+  sudo iptables -t mangle -D OUTPUT -j "$MARK_CHAIN" 2>/dev/null || true
+  sudo iptables -t mangle -F "$MARK_CHAIN" 2>/dev/null || true
+  sudo iptables -t mangle -X "$MARK_CHAIN" 2>/dev/null || true
   sudo ebtables -t nat -D POSTROUTING -j "$EBT_CHAIN" 2>/dev/null || true
   sudo ebtables -t nat -F "$EBT_CHAIN" 2>/dev/null || true
   sudo ebtables -t nat -X "$EBT_CHAIN" 2>/dev/null || true
@@ -77,9 +90,11 @@ clean() {
 
 status() {
   load_state
-  echo "backend=conntrack-bridge"
+  echo "backend=${PIVOT_BACKEND:-conntrack-bridge}"
+  echo "mode=$(pivot_mode)"
   echo "bridge=$BRIDGE"
   echo "bridge_ip_ready=$(ip -4 addr show dev "$BRIDGE" | grep -q "$(private_ip)" && echo yes || echo no)"
+  echo "mark_ready=$(sudo iptables -t mangle -S "$MARK_CHAIN" >/dev/null 2>&1 && echo yes || echo no)"
   echo "iptables_ready=$(sudo iptables -t nat -S "$NAT_CHAIN" >/dev/null 2>&1 && echo yes || echo no)"
   echo "ebtables_ready=$(sudo ebtables -t nat -L "$EBT_CHAIN" >/dev/null 2>&1 && echo yes || echo no)"
   echo "br_netfilter_ready=$([ -e /proc/sys/net/bridge/bridge-nf-call-iptables ] && [ "$(cat /proc/sys/net/bridge/bridge-nf-call-iptables)" = "1" ] && echo yes || echo no)"
@@ -131,12 +146,35 @@ apply() {
 
   BRIDGE_MAC="$(cat "/sys/class/net/$BRIDGE/address")"
 
+  if [ "$(pivot_mode)" = "mark" ] && ! id "$PIVOT_MARK_USER" >/dev/null 2>&1; then
+    sudo useradd --system --no-create-home --shell /usr/sbin/nologin "$PIVOT_MARK_USER"
+  fi
+
+  if [ "$(pivot_mode)" = "mark" ]; then
+    local uid
+    uid="$(id -u "$PIVOT_MARK_USER")"
+    sudo iptables -t mangle -N "$MARK_CHAIN" 2>/dev/null || sudo iptables -t mangle -F "$MARK_CHAIN"
+    sudo iptables -t mangle -C OUTPUT -j "$MARK_CHAIN" 2>/dev/null || sudo iptables -t mangle -A OUTPUT -j "$MARK_CHAIN"
+    sudo iptables -t mangle -A "$MARK_CHAIN" -m owner --uid-owner "$uid" -j MARK --set-mark "$PIVOT_MARK"
+  fi
+
   sudo iptables -t nat -N "$NAT_CHAIN" 2>/dev/null || sudo iptables -t nat -F "$NAT_CHAIN"
   sudo iptables -t nat -C POSTROUTING -j "$NAT_CHAIN" 2>/dev/null || sudo iptables -t nat -A POSTROUTING -j "$NAT_CHAIN"
-  sudo iptables -t nat -A "$NAT_CHAIN" -o "$BRIDGE" -s "$(private_ip)" -p tcp -j SNAT --to "$TARGET_IP:$PIVOT_SNAT_PORT_RANGE" --random-fully
-  sudo iptables -t nat -A "$NAT_CHAIN" -o "$BRIDGE" -s "$(private_ip)" -p udp -j SNAT --to "$TARGET_IP:$PIVOT_SNAT_PORT_RANGE" --random-fully
+  if [ "$(pivot_mode)" = "mark" ]; then
+    sudo iptables -t nat -A "$NAT_CHAIN" -m mark --mark "$PIVOT_MARK" -o "$BRIDGE" -s "$(private_ip)" -p tcp -j SNAT --to "$TARGET_IP" --random-fully \
+      || sudo iptables -t nat -A "$NAT_CHAIN" -m mark --mark "$PIVOT_MARK" -o "$BRIDGE" -s "$(private_ip)" -p tcp -j SNAT --to "$TARGET_IP"
+    sudo iptables -t nat -A "$NAT_CHAIN" -m mark --mark "$PIVOT_MARK" -o "$BRIDGE" -s "$(private_ip)" -p udp -j SNAT --to "$TARGET_IP" --random-fully \
+      || sudo iptables -t nat -A "$NAT_CHAIN" -m mark --mark "$PIVOT_MARK" -o "$BRIDGE" -s "$(private_ip)" -p udp -j SNAT --to "$TARGET_IP"
+  else
+    sudo iptables -t nat -A "$NAT_CHAIN" -o "$BRIDGE" -s "$(private_ip)" -p tcp -j SNAT --to "$TARGET_IP:$PIVOT_SNAT_PORT_RANGE" --random-fully
+    sudo iptables -t nat -A "$NAT_CHAIN" -o "$BRIDGE" -s "$(private_ip)" -p udp -j SNAT --to "$TARGET_IP:$PIVOT_SNAT_PORT_RANGE" --random-fully
+  fi
   if [ "$PIVOT_ENABLE_ICMP" = "yes" ]; then
-    sudo iptables -t nat -A "$NAT_CHAIN" -o "$BRIDGE" -s "$(private_ip)" -p icmp -j SNAT --to "$TARGET_IP"
+    if [ "$(pivot_mode)" = "mark" ]; then
+      sudo iptables -t nat -A "$NAT_CHAIN" -m mark --mark "$PIVOT_MARK" -o "$BRIDGE" -s "$(private_ip)" -p icmp -j SNAT --to "$TARGET_IP"
+    else
+      sudo iptables -t nat -A "$NAT_CHAIN" -o "$BRIDGE" -s "$(private_ip)" -p icmp -j SNAT --to "$TARGET_IP"
+    fi
   fi
 
   sudo ebtables -t nat -N "$EBT_CHAIN" 2>/dev/null || sudo ebtables -t nat -F "$EBT_CHAIN"

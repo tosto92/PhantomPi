@@ -202,6 +202,7 @@ Available modes:
 | `legacy-spoof` | Original `veth0`/`veth1` pivot. `veth1` takes the inline device IP/MAC and legacy ebtables/arptables/iptables rules reduce leaks. | Default and most compatible, but the implant and real device share the same identity. |
 | `nft-stateful` | Creates a `phantompi-pivot` namespace with a veth peer enslaved into `br0`. `nft bridge` rewrites implant-owned flows to the inline device IP/MAC and rewrites matching replies back to the namespace. | Avoids assigning the client identity to a root-namespace interface. Keep `PIVOT_ENABLE_ICMP="no"` for transparent client ICMP. |
 | `conntrack-bridge` | Assigns `PIVOT_CONNTRACK_IP` to `br0`, enables `br_netfilter`, uses iptables SNAT plus ebtables L2 SNAT, and lets conntrack reverse-NAT replies into the implant stack. | Closest to the NeCr00/NAC-Bypass model. Transparent client traffic remains untouched because L2 SNAT matches the bridge MAC, not the client MAC. |
+| `conntrack-mark` | Experimental `conntrack-bridge` variant. Only traffic from `PIVOT_MARK_USER` is marked in mangle/OUTPUT and eligible for SNAT; TCP/UDP SNAT does not force `PIVOT_SNAT_PORT_RANGE`. | Removes the obvious fixed-range signal, but requires running pivot tools as the dedicated user and still keeps normal TCP/IP fingerprint limits. |
 
 Common settings:
 
@@ -210,12 +211,15 @@ PIVOT_SNAT_PORT_RANGE="61000-62000"
 PIVOT_ENABLE_ICMP="no"
 PIVOT_CONNTRACK_IP="169.254.66.66/16"
 PIVOT_CONNTRACK_GW="169.254.66.1"
+PIVOT_MARK="0x66"
+PIVOT_MARK_USER="phantompi-pivot"
 ```
 
-`nft-stateful` and `conntrack-bridge` both use a reserved TCP/UDP source-port
-range for implant-owned flows. This reduces but does not mathematically remove
-collision risk with the real client. Keep the backend set to `legacy-spoof`
-unless the newer mode has been validated on the target kernel and network.
+`nft-stateful` and `conntrack-bridge` use a reserved TCP/UDP source-port range
+for implant-owned flows. `conntrack-mark` avoids forcing that range, but still
+depends on conntrack state and local process marking. Keep the backend set to
+`legacy-spoof` unless the newer mode has been validated on the target kernel
+and network.
 
 ## Installation
 

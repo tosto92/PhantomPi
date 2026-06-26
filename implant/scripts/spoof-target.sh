@@ -478,9 +478,9 @@ display_summary_and_confirm() {
 ##
 apply_spoof_config() {
   echo "[*] Applying spoofed configuration..."
-  if [ "$PIVOT_BACKEND" = "nft-stateful" ] || [ "$PIVOT_BACKEND" = "conntrack-bridge" ]; then
+  if [ "$PIVOT_BACKEND" = "nft-stateful" ] || [ "$PIVOT_BACKEND" = "conntrack-bridge" ] || [ "$PIVOT_BACKEND" = "conntrack-mark" ]; then
     local pivot_script="$PIVOT_NFT_SCRIPT"
-    [ "$PIVOT_BACKEND" = "conntrack-bridge" ] && pivot_script="$PIVOT_CONNTRACK_SCRIPT"
+    [ "$PIVOT_BACKEND" = "conntrack-bridge" ] || [ "$PIVOT_BACKEND" = "conntrack-mark" ] && pivot_script="$PIVOT_CONNTRACK_SCRIPT"
     [ -x "$pivot_script" ] || { echo "[!] pivot script not found: ${pivot_script}" >&2; exit 1; }
     [ -n "$GATEWAY_IP" ] || { echo "[!] Gateway IP is required for ${PIVOT_BACKEND} backend." >&2; exit 1; }
     [ -n "$GATEWAY_MAC" ] || { echo "[!] Gateway MAC is required for ${PIVOT_BACKEND} backend." >&2; exit 1; }
@@ -627,9 +627,9 @@ for s in data.get('suggestions', []):
   local added=0 failed=0
   while IFS= read -r subnet; do
     [ -z "$subnet" ] && continue
-    if [ "$PIVOT_BACKEND" = "nft-stateful" ] || [ "$PIVOT_BACKEND" = "conntrack-bridge" ]; then
+    if [ "$PIVOT_BACKEND" = "nft-stateful" ] || [ "$PIVOT_BACKEND" = "conntrack-bridge" ] || [ "$PIVOT_BACKEND" = "conntrack-mark" ]; then
       local pivot_script="$PIVOT_NFT_SCRIPT"
-      [ "$PIVOT_BACKEND" = "conntrack-bridge" ] && pivot_script="$PIVOT_CONNTRACK_SCRIPT"
+      [ "$PIVOT_BACKEND" = "conntrack-bridge" ] || [ "$PIVOT_BACKEND" = "conntrack-mark" ] && pivot_script="$PIVOT_CONNTRACK_SCRIPT"
       if sudo "$pivot_script" route-add "$subnet" 2>/dev/null; then
         echo "[+] Route added in ${PIVOT_BACKEND} pivot: ${subnet}"
         (( added++ )) || true

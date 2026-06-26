@@ -294,6 +294,8 @@ def generate_config_env(config: dict, ui: UI) -> None:
         f'PIVOT_IP="{get(config, "pivot", "pivot_ip", default="169.254.66.2/24")}"',
         f'PIVOT_CONNTRACK_IP="{get(config, "pivot", "conntrack_ip", default="169.254.66.66/16")}"',
         f'PIVOT_CONNTRACK_GW="{get(config, "pivot", "conntrack_gateway", default="169.254.66.1")}"',
+        f'PIVOT_MARK="{get(config, "pivot", "mark", default="0x66")}"',
+        f'PIVOT_MARK_USER="{get(config, "pivot", "mark_user", default="phantompi-pivot")}"',
         f'PIVOT_SNAT_PORT_RANGE="{get(config, "pivot", "snat_port_range", default="61000-62000")}"',
         f'PIVOT_NFT_TABLE_PREFIX="{get(config, "pivot", "nft_table_prefix", default="phantompi")}"',
         f'PIVOT_ENABLE_ICMP="{get(config, "pivot", "enable_icmp", default="no")}"',

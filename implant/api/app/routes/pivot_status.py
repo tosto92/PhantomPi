@@ -52,7 +52,7 @@ def _backend():
 
 
 def _pivot_script():
-    return PIVOT_CONNTRACK if _backend() == "conntrack-bridge" else PIVOT_NFT
+    return PIVOT_CONNTRACK if _backend() in ("conntrack-bridge", "conntrack-mark") else PIVOT_NFT
 
 
 def _parse_spoof_log():
@@ -122,6 +122,7 @@ def _script_backend_ready():
             and values.get("iptables_ready") == "yes"
             and values.get("ebtables_ready") == "yes"
             and values.get("br_netfilter_ready") == "yes"
+            and (_backend() != "conntrack-mark" or values.get("mark_ready") == "yes")
         )
     )
 
@@ -145,7 +146,7 @@ def register(app):
     @app.route("/pivot-status", methods=["GET"])
     def pivot_status():
         backend = _backend()
-        pivot_ready = _script_backend_ready() if backend in ("nft-stateful", "conntrack-bridge") else (
+        pivot_ready = _script_backend_ready() if backend in ("nft-stateful", "conntrack-bridge", "conntrack-mark") else (
             _iface_exists(VETH_IN) and _iface_exists(VETH_OUT)
         )
         return jsonify({

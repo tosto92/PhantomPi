@@ -51,7 +51,7 @@ def _backend():
 
 
 def _pivot_script():
-    return PIVOT_CONNTRACK if _backend() == "conntrack-bridge" else PIVOT_NFT
+    return PIVOT_CONNTRACK if _backend() in ("conntrack-bridge", "conntrack-mark") else PIVOT_NFT
 
 
 def _script_backend_ready():
@@ -74,6 +74,7 @@ def _script_backend_ready():
             and values.get("iptables_ready") == "yes"
             and values.get("ebtables_ready") == "yes"
             and values.get("br_netfilter_ready") == "yes"
+            and (_backend() != "conntrack-mark" or values.get("mark_ready") == "yes")
         )
     )
 
@@ -113,7 +114,7 @@ def register(app):
     @app.route("/pivot-setup", methods=["POST"])
     def pivot_setup():
         backend = _backend()
-        if backend in ("nft-stateful", "conntrack-bridge"):
+        if backend in ("nft-stateful", "conntrack-bridge", "conntrack-mark"):
             if not _script_backend_ready():
                 return jsonify({"error": f"pivot not ready: {backend} backend is not applied"}), 409
         elif not _veth_ready():
@@ -124,7 +125,7 @@ def register(app):
         if not subnets:
             return jsonify({"error": "no valid subnets provided"}), 400
 
-        if backend in ("nft-stateful", "conntrack-bridge"):
+        if backend in ("nft-stateful", "conntrack-bridge", "conntrack-mark"):
             configured, failed = [], []
             for subnet in subnets:
                 rc, _, err = _run(f"{_pivot_script()} route-add {subnet}")
@@ -176,7 +177,7 @@ def register(app):
 
         removed, failed = [], []
 
-        if backend in ("nft-stateful", "conntrack-bridge"):
+        if backend in ("nft-stateful", "conntrack-bridge", "conntrack-mark"):
             if not subnets:
                 rc, _, err = _run(f"{_pivot_script()} route-flush")
                 if rc == 0:
