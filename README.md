@@ -93,8 +93,8 @@
 |------------|-------------|
 | **Transparent Bridging** | Layer 2 bridge with `group_fwd_mask=8` for 802.1X EAPOL passthrough |
 | **Identity Spoofing** | Auto-detection of target IP/MAC via ARP, hostname via LLDP, gateway and DNS |
-| **Out-of-Band Control** | 4G/LTE modem (RNDIS) + WireGuard VPN + OpenClaw AI gateway |
-| **Traffic Interception** | Continuous packet capture with rolling PCAP storage + credential extraction with webhook push alerts |
+| **Out-of-Band Control** | 4G/LTE modem + WireGuard VPN with staged modem recovery before implant reboot |
+| **Traffic Interception** | Continuous rolling PCAP capture; bridge-scoped credential analysis with webhook push alerts |
 | **Resilience** | Hardware watchdog, WireGuard auto-reconnect, hidden WiFi AP fallback |
 
 ## Hardware
@@ -261,7 +261,7 @@ unless the newer mode has been validated on the target kernel and network.
 │   ├── bridge-sync.sh      # Bridge lifecycle (auto create/teardown)
 │   ├── traffic-analyzer.py # Scapy-based PCAP credential + subnet analyzer
 │   ├── spoof-target.sh     # Identity detection & spoofing
-│   ├── wg-keepalive.sh     # VPN auto-reconnect
+│   ├── wg-keepalive.sh     # Staged VPN/modem recovery
 │   ├── hidden-hotspot.sh   # Emergency WiFi AP
 │   ├── modem-config.sh     # LTE modem AT commands
 │   └── trigger-lldp.py     # LLDP hostname extraction
@@ -279,7 +279,7 @@ unless the newer mode has been validated on the target kernel and network.
    ```bash
    git clone https://github.com/1r0ncut/PhantomPi.git
    cd PhantomPi/vps
-   nano setup/init.json          # fill Discord token, guild ID, WireGuard peers
+   nano setup/init.json          # fill OpenAI key, Discord values, WireGuard peers
    ```
 2. Run the setup script:
    ```bash
